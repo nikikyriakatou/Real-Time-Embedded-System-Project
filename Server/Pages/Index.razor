@@ -1,0 +1,213 @@
+﻿@using Firebase.Database
+@using Firebase.Database.Query
+@using Models
+@using System.Reactive.Linq
+@using System.Text.Json
+@using Server.Services
+@using System.Globalization
+@using System.Collections.Concurrent
+
+@implements IDisposable
+
+@inject FirebaseService FirebaseService
+
+@page "/"
+
+<PageTitle>Index</PageTitle>
+
+<div class="container">
+	<div class="axis-container">
+		<div class="axis" id="axis_x-3" style="--c: @CoordinateSystemSize; --cx: @DisplayInterval; --cy: @DisplayInterval; --dsize: 6;">
+			@foreach (var item in Speeds.Values)
+			{
+				<div class="dot"
+				     style="
+						--x: @(item.CoordX.ToString("0.##", CultureInfo.CreateSpecificCulture("en-US"))); 
+						--y: @(item.CoordY.ToString("0.##", CultureInfo.CreateSpecificCulture("en-US")));">
+					<span class="tooltip">Outpost: @item.Outpost, Speed: @item.Speed, Coordinates: (@item.CoordX, @item.CoordY)</span>
+				</div>
+			}
+		</div>
+	</div>
+	<div class="table-container">
+		<button class="btn btn-primary" @onclick="async() => await AddMessageToTopic()">Add</button>
+
+		<div class="table-responsive">
+			<table class="table">
+				<thead>
+					<tr>
+						<th>ID</th>
+						<th>Outpost</th>
+						<th>Speed</th>
+						<th>Coord X</th>
+						<th>Coord Y</th>
+					</tr>
+				</thead>
+				<tbody>
+				@foreach (var speed in Speeds.Values)
+				{
+					<tr>
+						<td>@speed.MissileId</td>
+						<td>@speed.Outpost</td>
+						<td>@speed.Speed</td>
+						<td>@speed.CoordX.ToString("0.##")</td>
+						<td>@speed.CoordY.ToString("0.##")</td>
+					</tr>
+				}
+				</tbody>
+			</table>
+		</div>
+	</div>
+</div>
+
+<style>
+
+	.container {
+	display: flex;
+	flex-wrap: wrap;
+	justify-content: center; /* Centers items on the line (horizontally) */
+	align-items: center; /* Centers items on the cross-axis (vertically) */
+	}
+
+	.axis-container, .table-container {
+		flex: 1 0 50%;
+		box-sizing: border-box;
+		padding: 10px;
+	}
+
+	.axis {
+		width: 100%;
+		height: auto;
+		position: relative;
+	}
+
+	@@media (max-width: 768px) {
+		.axis-container, .table-container {
+			flex: 1 0 100%;
+		}
+	}
+
+	.dot:hover .tooltip {
+		visibility: visible;
+		opacity: 1;
+		background-color: red; /* Change the background color to red on hover */
+		color: white; /* Change the text color to white on hover */
+		font-weight: bold; /* Make the text bold on hover */
+		border-radius: 15px;
+		padding: 5px;
+	}
+
+	.axis {
+		--c: 10;
+		--cx: 5;
+		--cy: 5;
+		--dsize: 10;
+		--dcolor: #369;
+		--size: 100%;
+		position: relative;
+		width: var(--size);
+		height: 0;
+		padding-top: var(--size);
+		box-sizing: border-box;
+		aspect-ratio: 1/1;
+		background-image: linear-gradient(#0000 calc(var(--cy) * 100% / var(--c) - 1px), #0008 0 calc(var(--cy) * 100% / var(--c) + 1px), transparent 0), linear-gradient(to right, #0000 calc(var(--cx) * 100% / var(--c) - 1px), #0008 0 calc(var(--cx) * 100% / var(--c) + 1px), transparent 0), repeating-linear-gradient(#0002 0 0.5px, #0000 0 calc(100% / var(--c) - 0.5px), #0002 0 calc(100% / var(--c))), repeating-linear-gradient(to right, #0002 0 0.5px, #0000 0 calc(100% / var(--c) - 0.5px), #0002 0 calc(100% / var(--c)));
+	}
+
+		.axis.no-overflow {
+			overflow: hidden;
+		}
+
+	.dot {
+		--translationUnit: 100% / var(--c);
+		--translationX: var(--translationUnit) * var(--cx);
+		--translationY: var(--translationUnit) * var(--cy);
+		/* Vertical is "flipped" in CSS: higher values go down! Do negative! */
+		--calcy: calc(var(--translationY) - var(--translationUnit) * var(--y));
+		width: calc(var(--dsize) * 1px);
+		height: calc(var(--dsize) * 1px);
+		background: var(--dcolor);
+		border-radius: 50%;
+		position: absolute;
+		transform: translate(-50%, -50%);
+		left: calc(var(--translationX) + var(--x) * var(--translationUnit));
+		top: var(--calcy);
+	}
+
+	/* demo - display only */
+	html, body {
+		font-family: Helvetica, Arial, sans-serif;
+	}
+
+	article {
+		margin: 30px;
+	}
+</style>
+@code
+{
+	private const int DefaultDisplaySize = 10;
+	private readonly Random _random = new Random();
+	List<AlertRecord> Alerts { get; set; } = new();
+	ConcurrentDictionary<long,SpeedRecord> Speeds { get; set; } = new();
+	
+	int CoordinateSystemSize => DisplayInterval * 2;
+	int DisplayInterval { get; set; } = 10;
+
+
+	IDisposable Subscription { get; set; }
+
+	protected override void OnInitialized()
+	{
+
+		Subscription = FirebaseService.SubscribeToTopic<SpeedMessageRecord>("SpeedMessageRecord")
+			.Where(m => !string.IsNullOrEmpty(m.Key))
+			.Subscribe(m =>
+			{
+				var added = false;
+				while (!added)
+				{
+					Speeds.TryRemove(m.Object.Content.MissileId, out _);
+					added = Speeds.TryAdd(m.Object.Content.MissileId,m.Object.Content);
+				}
+				var x = (int)Speeds.MinBy(t => Math.Abs(t.Value.CoordX)).Value.CoordX + 5;
+				var y = (int)Speeds.MaxBy(t => Math.Abs(t.Value.CoordY)).Value.CoordY + 5;
+				DisplayInterval = x < y ? y : x;
+			});
+
+		for (int i = 0; i < 10; i++)
+		{
+			Speeds.TryAdd(i,new SpeedRecord()
+			{
+				MissileId = i,
+				CoordY = _random.Next(-10,10)+ _random.NextDouble(),
+					CoordX = _random.Next(-10, 10) + _random.NextDouble(),
+					Outpost = "Server",
+					Speed = _random.Next(1000)
+			});
+		}
+		var x = Math.Abs((int)Speeds.MinBy(t => t.Value.CoordX).Value.CoordX) + 1;
+		var y = Math.Abs((int)Speeds.MaxBy(t => t.Value.CoordY).Value.CoordY) + 1;
+		DisplayInterval = x < y ? y : x;
+		base.OnInitialized();
+	}
+
+	public async Task AddMessageToTopic()
+	{
+
+		await FirebaseService.PostEntryToTopic("SpeedMessageRecord", new SpeedMessageRecord()
+		{
+			Author = "Server", Content = new SpeedRecord()
+			{
+				CoordX = _random.Next(-50, 50) + _random.NextDouble(),
+				CoordY = _random.Next(-50, 50) + _random.NextDouble(),
+				MissileId = _random.Next(1000),
+				Outpost = "Server",
+				Speed = _random.Next(100)
+			}
+		});
+	}
+
+	public void Dispose()
+	{
+		Subscription.Dispose();
+	}
+}
